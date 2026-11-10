@@ -4,7 +4,7 @@ local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 
-local API_BASE = "https://equilibrium-press-baltimore-say.trycloudflare.com"
+local API_BASE = "https://staffing-rapid-atmospheric-products.trycloudflare.com"
 local DISCORD_INVITE = "https://discord.gg/Rwa2Urzcd"
 local LICENSE_FILE = "MahanakornAutoFarm/license.txt"
 
