@@ -102,7 +102,11 @@ local keyNow = readInitialKey()
 if keyNow ~= "" then
     local ok, payload = tryFetchPayload(keyNow)
     if ok and payload then
-        if _G then _G.Key = keyNow end
+        if _G then
+            _G.Key = keyNow
+            _G._DavinciVerified = true
+            _G._DavinciVerifiedKey = keyNow
+        end
         local fn, err = loadstring(payload)
         if fn then task.spawn(fn) else warn("[Davinci.dev] Compile error: " .. tostring(err)) end
         return
@@ -202,7 +206,11 @@ loadRow:Right():Button({
         StatusStack.Subtitle = "กำลังตรวจสอบสิทธิ์..."
         local ok, payload, errMsg = tryFetchPayload(k)
         if ok and payload then
-            if _G then _G.Key = tostring(k or ""):gsub("%s+", ""):upper() end
+            if _G then
+                _G.Key = tostring(k or ""):gsub("%s+", ""):upper()
+                _G._DavinciVerified = true
+                _G._DavinciVerifiedKey = _G.Key
+            end
             StatusStack.Subtitle = "สำเร็จ! กำลังเปิดสคริปต์..."
             pcall(function()
                 if AuthWin and AuthWin.__instance then AuthWin.__instance:Destroy() end
