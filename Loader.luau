@@ -42,36 +42,58 @@ end
 local function tryFetchPayload(keyCode: string): (boolean, string?, string?)
     keyCode = tostring(keyCode or ""):gsub("%s+", ""):upper()
     if keyCode == "" then return false, nil, "Missing key" end
+    local authJson = HttpService:JSONEncode({ key = keyCode, hwid = getHwid(), ts = os.time(), nonce = HttpService:GenerateGUID(false) })
     local okAuth, resAuth = pcall(reqFn, {
         Url = API_BASE .. "/api/auth",
+        url = API_BASE .. "/api/auth",
         Method = "POST",
+        method = "POST",
         Headers = { ["Content-Type"] = "application/json", ["Accept"] = "application/json" },
-        Body = HttpService:JSONEncode({ key = keyCode, hwid = getHwid(), ts = os.time(), nonce = HttpService:GenerateGUID(false) }),
+        headers = { ["Content-Type"] = "application/json", ["Accept"] = "application/json" },
+        Body = authJson,
+        body = authJson,
     })
-    if not okAuth or type(resAuth) ~= "table" or resAuth.StatusCode ~= 200 then
+    local sc = type(resAuth) == "table" and (resAuth.StatusCode or resAuth.status_code) or nil
+    local resBodyRaw = type(resAuth) == "table" and (resAuth.Body or resAuth.body) or ""
+    if not okAuth or type(resAuth) ~= "table" or sc ~= 200 then
         local errMsg = "Auth failed"
-        pcall(function()
-            local b = HttpService:JSONDecode(resAuth and resAuth.Body or "{}")
-            if b and b.status then errMsg = tostring(b.status) end
-        end)
+        if sc == 530 or sc == 502 or sc == 504 then
+            errMsg = "เซิร์ฟเวอร์บอทกำลังเชื่อมต่อ (" .. tostring(sc) .. ") กรุณากด Load ใหม่อีกครั้ง"
+        else
+            pcall(function()
+                local b = HttpService:JSONDecode(tostring(resBodyRaw or "{}"))
+                if b and b.status then errMsg = tostring(b.status) end
+            end)
+            if errMsg == "Auth failed" and sc then errMsg = "HTTP " .. tostring(sc) end
+        end
         return false, nil, errMsg
     end
-    local okJson, data = pcall(HttpService.JSONDecode, HttpService, tostring(resAuth.Body or "{}"))
+    local okJson, data = pcall(HttpService.JSONDecode, HttpService, tostring(resBodyRaw or "{}"))
     if not okJson or type(data) ~= "table" or not data.valid or not data.token then
         return false, nil, "Invalid auth response"
+    end
+    if data.expires_at then
+        if _G then _G._DavinciExpiresAt = tonumber(data.expires_at) or 0 end
     end
     pcall(function()
         if makefolder and isfolder and not isfolder("MahanakornAutoFarm") then makefolder("MahanakornAutoFarm") end
         if writefile then writefile(LICENSE_FILE, keyCode) end
     end)
+    local scJson = HttpService:JSONEncode({ token = data.token })
     local okScript, resScript = pcall(reqFn, {
         Url = API_BASE .. "/api/script",
+        url = API_BASE .. "/api/script",
         Method = "POST",
+        method = "POST",
         Headers = { ["Content-Type"] = "application/json" },
-        Body = HttpService:JSONEncode({ token = data.token }),
+        headers = { ["Content-Type"] = "application/json" },
+        Body = scJson,
+        body = scJson,
     })
-    if okScript and type(resScript) == "table" and resScript.StatusCode == 200 and type(resScript.Body) == "string" and #resScript.Body > 100 then
-        return true, resScript.Body, nil
+    local scCode = type(resScript) == "table" and (resScript.StatusCode or resScript.status_code) or nil
+    local scPayload = type(resScript) == "table" and (resScript.Body or resScript.body) or ""
+    if okScript and type(resScript) == "table" and scCode == 200 and type(scPayload) == "string" and #scPayload > 100 then
+        return true, scPayload, nil
     end
     return false, nil, "Failed to download protected payload"
 end
@@ -87,7 +109,7 @@ if keyNow ~= "" then
     end
 end
 
--- Interactive Cascade UI prompt if no valid cached/global key
+-- Interactive Cascade UI prompt
 local CASCADE_URL = "https://github.com/cascadeui/Cascade/releases/download/v1.4.0/dist.luau"
 local CASCADE_CACHE = "MahanakornAutoFarm/assets/cascade_v1.4.0.luau"
 local function loadCascade()
@@ -112,6 +134,7 @@ local function loadCascade()
     end
     return loadstring(src)()
 end
+
 local Cascade = loadCascade()
 pcall(function()
     local ugs = require(game:GetService("ReplicatedStorage"):WaitForChild("UiGuardShared", 3))
@@ -121,11 +144,13 @@ pcall(function()
         ugs.SWEEP_SKIP["Cascade"] = true
     end
 end)
+
 local AuthApp = Cascade.New({
     WindowPill = false,
     Theme = Cascade.Themes.Dark,
     Accent = Cascade.Accents.Blue,
 })
+
 local AuthWin = AuthApp:Window({
     Title = "Davinci.dev",
     Subtitle = "Script Loader",
@@ -139,12 +164,15 @@ local AuthWin = AuthApp:Window({
     UIBlur = true,
     Dropshadow = true,
 })
+
 local AuthSec = AuthWin:Section({ Title = "Loader", Disclosure = false, Expanded = true })
 local Tab = AuthSec:Tab({ Title = "Key System", Icon = Cascade.Symbols.key, Selected = true })
 local PageSec = Tab:PageSection({ Title = "Activate Access" })
+
 local Form = PageSec:Form()
 local statusRow = Form:Row({ SearchIndex = "Status" })
 local StatusStack = statusRow:Left():TitleStack({ Title = "Status", Subtitle = "กรุณากรอก License Key เพื่อโหลดสคริปต์" })
+
 local typed = keyNow
 local keyRow = Form:Row({ SearchIndex = "Key" })
 keyRow:Left():TitleStack({ Title = "License Key" })
@@ -153,6 +181,7 @@ local KeyInp = keyRow:Right():TextField({
     Value = keyNow,
     ValueChanged = function(_self, v) typed = v or "" end
 })
+
 local busy = false
 local loadRow = Form:Row({ SearchIndex = "Load" })
 loadRow:Left():TitleStack({ Title = "Load Script", Subtitle = "ยืนยันคีย์และดาวน์โหลดสคริปต์เข้าสู่ระบบ" })
@@ -175,7 +204,15 @@ loadRow:Right():Button({
         if ok and payload then
             if _G then _G.Key = tostring(k or ""):gsub("%s+", ""):upper() end
             StatusStack.Subtitle = "สำเร็จ! กำลังเปิดสคริปต์..."
-            pcall(function() AuthApp:Destroy() end)
+            pcall(function()
+                if AuthWin and AuthWin.__instance then AuthWin.__instance:Destroy() end
+                if AuthWin and AuthWin.Structures and AuthWin.Structures.Window then AuthWin.Structures.Window:Destroy() end
+                if AuthApp and AuthApp.Destroy then AuthApp:Destroy() end
+                local target = (type(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+                for _, v in ipairs(target:GetChildren()) do
+                    if v.Name == "Cascade" then v:Destroy() end
+                end
+            end)
             local fn, cerr = loadstring(payload)
             if fn then task.spawn(fn) else warn("[Davinci.dev] Compile error: " .. tostring(cerr)) end
         else
@@ -185,6 +222,7 @@ loadRow:Right():Button({
         busy = false
     end
 })
+
 if DISCORD_INVITE ~= "" then
     local dRow = Form:Row({ SearchIndex = "Discord" })
     dRow:Left():TitleStack({ Title = "Copy Discord Invite", Subtitle = "คัดลอกลิงก์ร้านค้าเพื่อซื้อ Key หรือ Reset HWID" })
