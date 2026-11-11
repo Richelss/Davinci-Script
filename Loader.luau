@@ -4,7 +4,7 @@ local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 
-local API_BASE = "https://staffing-rapid-atmospheric-products.trycloudflare.com"
+local API_BASE = "http://154.197.69.87:8090"
 local DISCORD_INVITE = "https://discord.gg/Rwa2Urzcd"
 local LICENSE_FILE = "MahanakornAutoFarm/license.txt"
 
@@ -113,7 +113,7 @@ if keyNow ~= "" then
     end
 end
 
--- Interactive Cascade UI prompt
+-- Interactive Cascade UI prompt if no valid cached/global key
 local CASCADE_URL = "https://github.com/cascadeui/Cascade/releases/download/v1.4.0/dist.luau"
 local CASCADE_CACHE = "MahanakornAutoFarm/assets/cascade_v1.4.0.luau"
 local function loadCascade()
@@ -138,7 +138,6 @@ local function loadCascade()
     end
     return loadstring(src)()
 end
-
 local Cascade = loadCascade()
 pcall(function()
     local ugs = require(game:GetService("ReplicatedStorage"):WaitForChild("UiGuardShared", 3))
@@ -148,13 +147,11 @@ pcall(function()
         ugs.SWEEP_SKIP["Cascade"] = true
     end
 end)
-
 local AuthApp = Cascade.New({
     WindowPill = false,
     Theme = Cascade.Themes.Dark,
     Accent = Cascade.Accents.Blue,
 })
-
 local AuthWin = AuthApp:Window({
     Title = "Davinci.dev",
     Subtitle = "Script Loader",
@@ -168,15 +165,12 @@ local AuthWin = AuthApp:Window({
     UIBlur = true,
     Dropshadow = true,
 })
-
 local AuthSec = AuthWin:Section({ Title = "Loader", Disclosure = false, Expanded = true })
 local Tab = AuthSec:Tab({ Title = "Key System", Icon = Cascade.Symbols.key, Selected = true })
 local PageSec = Tab:PageSection({ Title = "Activate Access" })
-
 local Form = PageSec:Form()
 local statusRow = Form:Row({ SearchIndex = "Status" })
 local StatusStack = statusRow:Left():TitleStack({ Title = "Status", Subtitle = "กรุณากรอก License Key เพื่อโหลดสคริปต์" })
-
 local typed = keyNow
 local keyRow = Form:Row({ SearchIndex = "Key" })
 keyRow:Left():TitleStack({ Title = "License Key" })
@@ -185,7 +179,6 @@ local KeyInp = keyRow:Right():TextField({
     Value = keyNow,
     ValueChanged = function(_self, v) typed = v or "" end
 })
-
 local busy = false
 local loadRow = Form:Row({ SearchIndex = "Load" })
 loadRow:Left():TitleStack({ Title = "Load Script", Subtitle = "ยืนยันคีย์และดาวน์โหลดสคริปต์เข้าสู่ระบบ" })
@@ -230,7 +223,6 @@ loadRow:Right():Button({
         busy = false
     end
 })
-
 if DISCORD_INVITE ~= "" then
     local dRow = Form:Row({ SearchIndex = "Discord" })
     dRow:Left():TitleStack({ Title = "Copy Discord Invite", Subtitle = "คัดลอกลิงก์ร้านค้าเพื่อซื้อ Key หรือ Reset HWID" })
