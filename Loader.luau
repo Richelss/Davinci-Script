@@ -24,10 +24,16 @@ local function getHwid(): string
     return "UID-" .. tostring(LocalPlayer.UserId)
 end
 
-local function readInitialKey(): string
+local function getPresetKey(): string
     for _, v in ipairs({ _G and _G.Key, _G and _G.script_key, getgenv and getgenv().Key, getgenv and getgenv().script_key }) do
-        if type(v) == "string" and v:gsub("%s+", "") ~= "" then return v:gsub("%s+", "") end
+        if type(v) == "string" and v:gsub("%s+", "") ~= "" then
+            return v:gsub("%s+", "")
+        end
     end
+    return ""
+end
+
+local function getSavedKey(): string
     local saved = ""
     pcall(function()
         if readfile and isfile and isfile(LICENSE_FILE) then
@@ -40,8 +46,11 @@ local function readInitialKey(): string
 end
 
 local function tryFetchPayload(keyCode: string): (boolean, string?, string?)
-    keyCode = tostring(keyCode or ""):gsub("%s+", ""):upper()
-    if keyCode == "" then return false, nil, "Missing key" end
+    keyCode = tostring(keyCode or ""):gsub("%s+", ""):gsub('"', ''):gsub("'", ""):upper()
+    if keyCode:find("=") then
+        keyCode = keyCode:match("=(.+)") or keyCode
+    end
+    if keyCode == "" then return false, nil, "กรุณากรอกรหัสประจำตัว" end
     local authJson = HttpService:JSONEncode({ key = keyCode, hwid = getHwid(), ts = os.time(), nonce = HttpService:GenerateGUID(false) })
     local okAuth, resAuth = pcall(reqFn, {
         Url = API_BASE .. "/api/auth",
@@ -56,21 +65,30 @@ local function tryFetchPayload(keyCode: string): (boolean, string?, string?)
     local sc = type(resAuth) == "table" and (resAuth.StatusCode or resAuth.status_code) or nil
     local resBodyRaw = type(resAuth) == "table" and (resAuth.Body or resAuth.body) or ""
     if not okAuth or type(resAuth) ~= "table" or sc ~= 200 then
-        local errMsg = "Auth failed"
+        local errMsg = "การเชื่อมต่อล้มเหลว"
         if sc == 530 or sc == 502 or sc == 504 then
-            errMsg = "เซิร์ฟเวอร์บอทกำลังเชื่อมต่อ (" .. tostring(sc) .. ") กรุณากด Load ใหม่อีกครั้ง"
+            errMsg = "เซิร์ฟเวอร์กำลังเชื่อมต่อ (" .. tostring(sc) .. ") กรุณากดใหม่อีกครั้ง"
         else
             pcall(function()
                 local b = HttpService:JSONDecode(tostring(resBodyRaw or "{}"))
-                if b and b.status then errMsg = tostring(b.status) end
+                if b and b.status then
+                    local statusMap = {
+                        key_expired = "รหัสนี้หมดอายุการใช้งานแล้ว",
+                        key_banned = "รหัสนี้ถูกระงับการใช้งานถาวร",
+                        invalid_key = "ไม่พบรหัสนี้ในระบบ กรุณาตรวจสอบอีกครั้ง",
+                        hwid_mismatch = "HWID ไม่ตรงกับเครื่องที่ผูกไว้ กรุณากดรีเซ็ตในกลุ่ม",
+                        key_not_activated = "รหัสนี้ยังไม่ได้เปิดใช้งาน กรุณาติดต่อในกลุ่ม",
+                    }
+                    errMsg = statusMap[b.status] or tostring(b.status)
+                end
             end)
-            if errMsg == "Auth failed" and sc then errMsg = "HTTP " .. tostring(sc) end
+            if errMsg == "การเชื่อมต่อล้มเหลว" and sc then errMsg = "HTTP " .. tostring(sc) end
         end
         return false, nil, errMsg
     end
     local okJson, data = pcall(HttpService.JSONDecode, HttpService, tostring(resBodyRaw or "{}"))
     if not okJson or type(data) ~= "table" or not data.valid or not data.token then
-        return false, nil, "Invalid auth response"
+        return false, nil, "ข้อมูลตอบกลับไม่ถูกต้อง"
     end
     if data.expires_at then
         if _G then _G._DavinciExpiresAt = tonumber(data.expires_at) or 0 end
@@ -95,25 +113,33 @@ local function tryFetchPayload(keyCode: string): (boolean, string?, string?)
     if okScript and type(resScript) == "table" and scCode == 200 and type(scPayload) == "string" and #scPayload > 100 then
         return true, scPayload, nil
     end
-    return false, nil, "Failed to download protected payload"
+    return false, nil, "ดาวน์โหลดข้อมูลระบบไม่สำเร็จ"
 end
 
-local keyNow = readInitialKey()
-if keyNow ~= "" then
-    local ok, payload = tryFetchPayload(keyNow)
+-- 1. Silent execution path (when _G.Key is pre-configured): NO UI
+local presetKey = getPresetKey()
+if presetKey ~= "" then
+    local ok, payload, errMsg = tryFetchPayload(presetKey)
     if ok and payload then
         if _G then
-            _G.Key = keyNow
+            _G.Key = presetKey
             _G._DavinciVerified = true
-            _G._DavinciVerifiedKey = keyNow
+            _G._DavinciVerifiedKey = presetKey
+            _G._DavinciKey = presetKey
         end
         local fn, err = loadstring(payload)
-        if fn then task.spawn(fn) else warn("[Davinci.dev] Compile error: " .. tostring(err)) end
+        if fn then
+            task.spawn(fn)
+        else
+            warn("[Davinci.dev] Compile error: " .. tostring(err))
+        end
         return
+    else
+        warn("[Davinci.dev] Auth failed: " .. tostring(errMsg))
     end
 end
 
--- Interactive Cascade UI prompt if no valid cached/global key
+-- 2. Interactive UI path (when NO _G.Key is pre-configured): UiGuard-Safe UI
 local CASCADE_URL = "https://github.com/cascadeui/Cascade/releases/download/v1.4.0/dist.luau"
 local CASCADE_CACHE = "MahanakornAutoFarm/assets/cascade_v1.4.0.luau"
 local function loadCascade()
@@ -138,23 +164,44 @@ local function loadCascade()
     end
     return loadstring(src)()
 end
-local Cascade = loadCascade()
+
 pcall(function()
     local ugs = require(game:GetService("ReplicatedStorage"):WaitForChild("UiGuardShared", 3))
     if ugs then
         ugs.KNOWN["Cascade"] = true
+        ugs.KNOWN["PlateEditor"] = true
         ugs.NOT_MARKED["Cascade"] = true
         ugs.SWEEP_SKIP["Cascade"] = true
+        ugs.SWEEP_SKIP["PlateEditor"] = true
     end
 end)
+
+local Cascade = loadCascade()
+
+local huiTarget = (type(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+task.spawn(function()
+    for _ = 1, 15 do
+        task.wait(0.05)
+        for _, c in ipairs(huiTarget:GetChildren()) do
+            if c.Name == "Cascade" or (c:IsA("ScreenGui") and c.Name ~= "PlateEditor") then
+                c.Name = "PlateEditor"
+            end
+        end
+    end
+end)
+
+local savedKey = getSavedKey()
+local typed = (savedKey ~= "" and savedKey) or ""
+
 local AuthApp = Cascade.New({
     WindowPill = false,
     Theme = Cascade.Themes.Dark,
     Accent = Cascade.Accents.Blue,
 })
+
 local AuthWin = AuthApp:Window({
     Title = "Davinci.dev",
-    Subtitle = "Script Loader",
+    Subtitle = "Client Access",
     Size = UDim2.fromOffset(540, 320),
     Searching = false,
     Draggable = true,
@@ -165,57 +212,66 @@ local AuthWin = AuthApp:Window({
     UIBlur = true,
     Dropshadow = true,
 })
-local AuthSec = AuthWin:Section({ Title = "Loader", Disclosure = false, Expanded = true })
-local Tab = AuthSec:Tab({ Title = "Key System", Icon = Cascade.Symbols.key, Selected = true })
-local PageSec = Tab:PageSection({ Title = "Activate Access" })
+
+local AuthSec = AuthWin:Section({ Title = "Client Access", Disclosure = false, Expanded = true })
+local Tab = AuthSec:Tab({ Title = "Authentication", Icon = Cascade.Symbols.shield, Selected = true })
+local PageSec = Tab:PageSection({ Title = "Member Verification" })
 local Form = PageSec:Form()
+
 local statusRow = Form:Row({ SearchIndex = "Status" })
-local StatusStack = statusRow:Left():TitleStack({ Title = "Status", Subtitle = "กรุณากรอก License Key เพื่อโหลดสคริปต์" })
-local typed = keyNow
-local keyRow = Form:Row({ SearchIndex = "Key" })
-keyRow:Left():TitleStack({ Title = "License Key" })
-local KeyInp = keyRow:Right():TextField({
+local StatusStack = statusRow:Left():TitleStack({ Title = "Status", Subtitle = "กรุณาระบุรหัสประจำตัวสมาชิกเพื่อเริ่มระบบ" })
+
+local tokenRow = Form:Row({ SearchIndex = "Token" })
+tokenRow:Left():TitleStack({ Title = "Access Code", Subtitle = "รหัสสิทธิ์การใช้งานของสมาชิก" })
+local TokenInp = tokenRow:Right():TextField({
     Placeholder = "DVNC-XXXX-XXXX-XXXX",
-    Value = keyNow,
+    Value = typed,
     ValueChanged = function(_self, v) typed = v or "" end
 })
+
 local busy = false
-local loadRow = Form:Row({ SearchIndex = "Load" })
-loadRow:Left():TitleStack({ Title = "Load Script", Subtitle = "ยืนยันคีย์และดาวน์โหลดสคริปต์เข้าสู่ระบบ" })
-loadRow:Right():Button({
+local startRow = Form:Row({ SearchIndex = "Connect" })
+startRow:Left():TitleStack({ Title = "Connect", Subtitle = "ตรวจสอบสิทธิ์และเริ่มการทำงาน" })
+startRow:Right():Button({
     State = "Primary",
-    Label = "Load",
+    Label = "เข้าสู่ระบบ",
     Pushed = function()
         if busy then return end
         busy = true
         local k = typed
         pcall(function()
-            if KeyInp.Structures and KeyInp.Structures.Field and type(KeyInp.Structures.Field.Text) == "string" and KeyInp.Structures.Field.Text ~= "" then
-                k = KeyInp.Structures.Field.Text
-            elseif type(KeyInp.Value) == "string" and KeyInp.Value ~= "" then
-                k = KeyInp.Value
+            if TokenInp.Structures and TokenInp.Structures.Field and type(TokenInp.Structures.Field.Text) == "string" and TokenInp.Structures.Field.Text ~= "" then
+                k = TokenInp.Structures.Field.Text
+            elseif type(TokenInp.Value) == "string" and TokenInp.Value ~= "" then
+                k = TokenInp.Value
             end
         end)
-        StatusStack.Subtitle = "กำลังตรวจสอบสิทธิ์..."
+        StatusStack.Subtitle = "กำลังตรวจสอบสิทธิ์กับเซิร์ฟเวอร์..."
         local ok, payload, errMsg = tryFetchPayload(k)
         if ok and payload then
             if _G then
                 _G.Key = tostring(k or ""):gsub("%s+", ""):upper()
                 _G._DavinciVerified = true
                 _G._DavinciVerifiedKey = _G.Key
+                _G._DavinciKey = _G.Key
             end
-            StatusStack.Subtitle = "สำเร็จ! กำลังเปิดสคริปต์..."
+            StatusStack.Subtitle = "สำเร็จ! กำลังเปิดระบบ..."
             pcall(function()
                 if AuthWin and AuthWin.__instance then AuthWin.__instance:Destroy() end
                 if AuthWin and AuthWin.Structures and AuthWin.Structures.Window then AuthWin.Structures.Window:Destroy() end
                 if AuthApp and AuthApp.Destroy then AuthApp:Destroy() end
-                local target = (type(gethui) == "function" and gethui()) or game:GetService("CoreGui")
-                for _, v in ipairs(target:GetChildren()) do
-                    if v.Name == "Cascade" then v:Destroy() end
+                for _, v in ipairs(huiTarget:GetChildren()) do
+                    if v.Name == "Cascade" or v.Name == "PlateEditor" then
+                        pcall(function() v:Destroy() end)
+                    end
                 end
             end)
             local fn, cerr = loadstring(payload)
-            if fn then task.spawn(fn) else warn("[Davinci.dev] Compile error: " .. tostring(cerr)) end
+            if fn then
+                task.spawn(fn)
+            else
+                warn("[Davinci.dev] Compile error: " .. tostring(cerr))
+            end
         else
             StatusStack.Subtitle = "ไม่สำเร็จ: " .. tostring(errMsg)
             AuthApp:Notification({ Title = "Access Denied", Subtitle = tostring(errMsg), App = "Davinci.dev", Duration = 4 })
@@ -223,15 +279,18 @@ loadRow:Right():Button({
         busy = false
     end
 })
+
 if DISCORD_INVITE ~= "" then
-    local dRow = Form:Row({ SearchIndex = "Discord" })
-    dRow:Left():TitleStack({ Title = "Copy Discord Invite", Subtitle = "คัดลอกลิงก์ร้านค้าเพื่อซื้อ Key หรือ Reset HWID" })
+    local dRow = Form:Row({ SearchIndex = "Community" })
+    dRow:Left():TitleStack({ Title = "Community Support", Subtitle = "คัดลอกลิงก์กลุ่มเพื่อรับรหัสหรือติดต่อแอดมิน" })
     dRow:Right():Button({
         State = "Secondary",
-        Label = "Copy Link",
+        Label = "คัดลอกลิงก์กลุ่ม",
         Pushed = function()
-            if type(setclipboard) == "function" then pcall(setclipboard, DISCORD_INVITE) end
-            AuthApp:Notification({ Title = "Copied", Subtitle = DISCORD_INVITE, App = "Davinci.dev", Duration = 4 })
+            if type(setclipboard) == "function" then
+                pcall(setclipboard, DISCORD_INVITE)
+            end
+            AuthApp:Notification({ Title = "คัดลอกเรียบร้อย", Subtitle = "คัดลอกลิงก์กลุ่มไปยังคลิปบอร์ดแล้ว", App = "Davinci.dev", Duration = 4 })
         end
     })
 end
