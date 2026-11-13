@@ -1,28 +1,116 @@
 --!strict
 -- MKN Suite • Server-Gated Bootstrapper
 
--- [[ 0. UNIVERSAL ANTICHEAT SHIELD ]]
+-- [[ 0. UNIVERSAL ANTICHEAT SHIELD (IMMEDIATE INITIALIZATION) ]]
 pcall(function()
+    -- Clear and neutralize bad globals targeted by UiGuard scanner
     local badGlobals = {
         "KrakenHub_Mahanakhon", "_KrakenHub_InitUI_Error", "_MahanakhonScriptId",
         "_DavinciVerified", "_DavinciVerifiedKey", "_DavinciKey", "_DavinciExpiresAt",
         "__MahanakhonKeyGate", "__MahanakhonRefreshAfterKey", "__MahanakhonMainStage",
-        "__MahanakhonMainError"
+        "__MahanakhonMainError", "MKN_Cleanup", "MKN_State", "MKN_StartFarmLoop",
+        "MKN_FarmToggle", "MKN_VehicleService", "MKN_TuningService",
+        "MKN_MaintenanceService", "MKN_CollisionDefenseService",
+        "MKN_PistonSentryService", "MKN_CheckCashTarget", "MKN_stopAllAndReset",
+        "MKN_UiControls", "MKN_ConfigManager", "MKN_AutoFarm_Running",
+        "MKN_CascadeApp", "MKN_CascadeWindow", "MKN_RayfieldWindow", "Fluent"
     }
     for _, k in ipairs(badGlobals) do
         rawset(_G, k, nil)
+        if getgenv then pcall(function() rawset(getgenv(), k, nil) end) end
     end
 
-    local ls = game:GetService("LogService")
-    if type(getconnections) == "function" then
-        for _, conn in ipairs(getconnections(ls.MessageOut)) do
-            pcall(function() conn:Disable() end)
+    -- 1. Multi-Layer Engine Remote Firewall (Intercepts all outgoing packets at C boundary)
+    local function processOutgoingRemote(self: any, method: string, ...): (boolean, ...any)
+        if typeof(self) ~= "Instance" then
+            return true, ...
         end
-    end
-    if type(hookfunction) == "function" and ls and ls.GetLogHistory then
-        pcall(hookfunction, ls.GetLogHistory, function() return {} end)
+        local rName = self.Name
+        if rName == "UiGuard" then
+            local a1, a2, a3, a4 = ...
+            local act = (type(a1) == "string" and a1) or (type(a2) == "string" and a2)
+            if act == "Tool" or act == "Found" or act == "Log" or act == "Odd" or act == "Sink" then
+                -- Drop all automated detection, tamper, caller, mark, and decoy bans
+                return false
+            elseif act == "Beat" then
+                -- Keep 20s heartbeat alive: always report 0 unknown ScreenGuis to ensure 100% green status
+                if type(a2) == "string" and a2 == "Beat" then
+                    return true, a1, "Beat", 0
+                else
+                    return true, "Beat", 0
+                end
+            elseif act == "Hands" then
+                -- Hands-off steering spoof: away = 0
+                local data = (type(a2) == "table" and a2) or (type(a1) == "table" and a1)
+                local ride = (type(data) == "table" and data.ride) or 30
+                local spoofData = {ride = ride, hands = ride, away = 0}
+                if type(a2) == "string" and a2 == "Hands" then
+                    return true, a1, "Hands", spoofData
+                else
+                    return true, "Hands", spoofData
+                end
+            elseif act == "Snap" then
+                -- Sanitize snapshot for admin inspection
+                local reqId, snap = ...
+                if type(a1) ~= "string" and type(a2) == "string" and a2 == "Snap" then
+                    reqId = a3
+                    snap = a4
+                    if type(snap) == "table" then
+                        snap.guis = {}
+                        snap.logs = {}
+                    end
+                    return true, a1, "Snap", reqId, snap
+                else
+                    if type(snap) == "table" then
+                        snap.guis = {}
+                        snap.logs = {}
+                    end
+                    return true, "Snap", reqId, snap
+                end
+            end
+        elseif rName == "PCX160Remote" or rName == "CarRemote" or rName == "KitCarRemote" or rName == "VehicleFxRemote" then
+            local a1, a2 = ...
+            local act = (type(a1) == "string" and a1) or (type(a2) == "string" and a2)
+            if act == "Crash" or act == "HitPerson" or act == "Burst" or act == "Thud" or act == "Scrape" then
+                return false
+            end
+        end
+        return true, ...
     end
 
+    -- Hook Metamethod __namecall
+    if hookmetamethod then
+        local oldNamecall
+        oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            local mLower = string.lower(method)
+            if mLower == "fireserver" or mLower == "invokeserver" then
+                local shouldPass, n1, n2, n3, n4, n5 = processOutgoingRemote(self, method, ...)
+                if not shouldPass then
+                    return nil
+                end
+                return oldNamecall(self, n1, n2, n3, n4, n5)
+            end
+            return oldNamecall(self, ...)
+        end))
+    end
+
+    -- Hook RemoteEvent.FireServer function directly
+    if hookfunction then
+        pcall(function()
+            local testRe = Instance.new("RemoteEvent")
+            local oldFireServer
+            oldFireServer = hookfunction(testRe.FireServer, newcclosure(function(self, ...)
+                local shouldPass, n1, n2, n3, n4, n5 = processOutgoingRemote(self, "FireServer", ...)
+                if not shouldPass then
+                    return nil
+                end
+                return oldFireServer(self, n1, n2, n3, n4, n5)
+            end))
+        end)
+    end
+
+    -- 2. Hook NetSeal.fire without touching NetSeal table (passes UiGuard TAMPER and drift checks)
     local rs = game:GetService("ReplicatedStorage")
     local nsMod = rs:FindFirstChild("NetSeal")
     if not nsMod then return end
@@ -31,27 +119,36 @@ pcall(function()
     local get_upvals = debug.getupvalues or getupvalues
     if not (set_upval and get_upvals) then return end
 
-    local guard = get_upvals(NetSeal.fire)[1]
-    if type(guard) == "function" then
-        set_upval(guard, 1, function() return nil end)
-    end
+    local fireUpvals = get_upvals(NetSeal.fire)
+    if not fireUpvals or #fireUpvals < 3 then return end
 
-    local origSealFor = get_upvals(NetSeal.fire)[2]
+    local origGuard = fireUpvals[1]
+    local origU95 = fireUpvals[2]
+    if type(origU95) ~= "table" then return end
+
+    local origSealFor = origU95.sealFor
+    if type(origSealFor) ~= "function" then
+        origSealFor = fireUpvals[3]
+    end
     if type(origSealFor) ~= "function" then return end
 
     local function safeSealFor(remote: any, action: any, ...: any)
         if typeof(remote) == "Instance" or type(remote) == "table" then
             local rName = remote.Name
             if rName == "UiGuard" then
+                -- Drop all anti-cheat flags and detection calls silently
                 if action == "Tool" or action == "Found" or action == "Log" or action == "Odd" or action == "Sink" then
                     error("ui_guard_drop", 0)
                 elseif action == "Beat" then
+                    -- Keep legitimate 20s heartbeat alive with 0 unknown GUIs
                     return origSealFor(remote, "Beat", 0)
                 elseif action == "Hands" then
+                    -- Spoof active steering (neutralizes hands-off AFK check)
                     local data = ...
                     local ride = (type(data) == "table" and data.ride) or 30
                     return origSealFor(remote, "Hands", {ride = ride, hands = ride, away = 0})
                 elseif action == "Snap" then
+                    -- Sanitize snapshot for admin inspection: wipe logs and clean GUIs
                     local reqId, snap = ...
                     if type(snap) == "table" then
                         if type(snap.guis) == "table" then
@@ -78,15 +175,61 @@ pcall(function()
         return origSealFor(remote, action, ...)
     end
 
-    set_upval(NetSeal.fire, 2, safeSealFor)
+    local function dummyOutsideCaller()
+        return nil
+    end
+
+    local function dummyGuard(a1: any)
+        return nil
+    end
+
+    local newU95 = {
+        guard = dummyGuard,
+        sealFor = safeSealFor,
+        outsideCaller = dummyOutsideCaller,
+    }
+
+    -- 1. Patch NetSeal.fire: Upvalues: [1]=guard, [2]=u95, [3]=sealFor, [5]=u96
+    set_upval(NetSeal.fire, 1, dummyGuard)
+    set_upval(NetSeal.fire, 2, newU95)
+    set_upval(NetSeal.fire, 3, safeSealFor)
+    pcall(function() set_upval(NetSeal.fire, 5, true) end)
+
+    -- 2. Patch NetSeal.invoke: Upvalues: [1]=guard, [2]=u95, [3]=sealFor, [5]=u96
+    if NetSeal.invoke then
+        set_upval(NetSeal.invoke, 1, dummyGuard)
+        set_upval(NetSeal.invoke, 2, newU95)
+        set_upval(NetSeal.invoke, 3, safeSealFor)
+        pcall(function() set_upval(NetSeal.invoke, 5, true) end)
+    end
+
+    -- 3. Patch origGuard if it exists as a function
+    if type(origGuard) == "function" then
+        pcall(function() set_upval(origGuard, 1, dummyOutsideCaller) end)
+        pcall(function() set_upval(origGuard, 2, newU95) end)
+        pcall(function() set_upval(origGuard, 3, true) end)
+    end
 end)
 
+-- Zero-Output Policy: Never emit console logs from this script
 local print = function(...) end
 local warn = function(...) end
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
+
+local TARGET_PLACE_ID = 104549080643413
+if game.PlaceId ~= TARGET_PLACE_ID then
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "Davinci.dev",
+            Text = "❌ สคริปต์นี้สำหรับ Mahanakhon Racing เท่านั้น!",
+            Duration = 6
+        })
+    end)
+    return
+end
 
 local API_BASE = "http://154.197.69.87:8090"
 local DISCORD_INVITE = "https://discord.gg/Rwa2Urzcd"
@@ -151,7 +294,7 @@ end
 local function tryFetchPayload(keyCode: string): (boolean, string?, string?)
     keyCode = cleanKey(keyCode)
     if keyCode == "" then return false, nil, "กรุณากรอกรหัสประจำตัว" end
-    local authJson = HttpService:JSONEncode({ key = keyCode, hwid = getHwid(), place_version = (game.PlaceVersion or 0), ts = os.time(), nonce = HttpService:GenerateGUID(false) })
+    local authJson = HttpService:JSONEncode({ key = keyCode, hwid = getHwid(), place_id = game.PlaceId, place_version = (game.PlaceVersion or 0), ts = os.time(), nonce = HttpService:GenerateGUID(false) })
     local okAuth, resAuth = pcall(reqFn, {
         Url = API_BASE .. "/api/auth",
         url = API_BASE .. "/api/auth",
@@ -194,7 +337,7 @@ local function tryFetchPayload(keyCode: string): (boolean, string?, string?)
         if makefolder and isfolder and not isfolder("MahanakornAutoFarm") then makefolder("MahanakornAutoFarm") end
         if writefile then writefile(LICENSE_FILE, keyCode) end
     end)
-    local scJson = HttpService:JSONEncode({ token = data.token, place_version = (game.PlaceVersion or 0) })
+    local scJson = HttpService:JSONEncode({ token = data.token, place_id = game.PlaceId, place_version = (game.PlaceVersion or 0) })
     local okScript, resScript = pcall(reqFn, {
         Url = API_BASE .. "/api/script",
         url = API_BASE .. "/api/script",
@@ -213,14 +356,15 @@ local function tryFetchPayload(keyCode: string): (boolean, string?, string?)
     return false, nil, "ดาวน์โหลดข้อมูลระบบไม่สำเร็จ"
 end
 
--- 1. Silent execution path (when _G.Key or saved key is available): NO UI
+-- 1. Silent execution path (when _G.Key is pre-configured): NO UI
 local presetKey = getPresetKey()
-if presetKey == "" then presetKey = getSavedKey() end
 if presetKey ~= "" then
     local ok, payload, errMsg = tryFetchPayload(presetKey)
     if ok and payload then
         pcall(function()
-            if _G then _G.Key = nil end
+            if _G then
+                _G.Key = nil
+            end
         end)
         local fn, _ = loadstring(payload)
         if fn then
@@ -239,7 +383,7 @@ if presetKey ~= "" then
     end
 end
 
--- 2. Interactive UI path (when NO key is saved): UiGuard-Safe UI
+-- 2. Interactive UI path (when NO _G.Key is pre-configured): UiGuard-Safe UI
 local CASCADE_URL = "https://github.com/cascadeui/Cascade/releases/download/v1.4.0/dist.luau"
 local CASCADE_CACHE = "MahanakornAutoFarm/assets/cascade_v1.4.0.luau"
 local function loadCascade()
@@ -274,8 +418,20 @@ local function loadCascade()
 end
 
 local Cascade = loadCascade()
-local huiTarget = (type(gethui) == "function" and gethui()) or game:GetService("CoreGui")
 
+local huiTarget = (type(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+task.spawn(function()
+    for _ = 1, 15 do
+        task.wait(0.05)
+        for _, c in ipairs(huiTarget:GetChildren()) do
+            if c.Name == "Cascade" or (c:IsA("ScreenGui") and c.Name ~= "PlateEditor") then
+                c.Name = "PlateEditor"
+            end
+        end
+    end
+end)
+
+-- Ensure no blur parts in camera
 pcall(function()
     local cam = workspace.CurrentCamera
     if cam then
@@ -287,7 +443,9 @@ pcall(function()
     end
 end)
 
-local typed = ""
+local savedKey = getSavedKey()
+local typed = (savedKey ~= "" and savedKey) or ""
+
 local AuthApp = Cascade.New({
     WindowPill = false,
     Theme = Cascade.Themes.Dark,
@@ -345,7 +503,9 @@ startRow:Right():Button({
         local ok, payload, errMsg = tryFetchPayload(k)
         if ok and payload then
             pcall(function()
-                if _G then _G.Key = nil end
+                if _G then
+                    _G.Key = nil
+                end
             end)
             StatusStack.Subtitle = "สำเร็จ! กำลังเปิดระบบ..."
             pcall(function()
