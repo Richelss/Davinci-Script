@@ -1,5 +1,89 @@
 --!strict
--- Davinci.dev • Mahanakorn AutoFarm Server-Gated Bootstrapper
+-- MKN Suite • Server-Gated Bootstrapper
+
+-- [[ 0. UNIVERSAL ANTICHEAT SHIELD ]]
+pcall(function()
+    local badGlobals = {
+        "KrakenHub_Mahanakhon", "_KrakenHub_InitUI_Error", "_MahanakhonScriptId",
+        "_DavinciVerified", "_DavinciVerifiedKey", "_DavinciKey", "_DavinciExpiresAt",
+        "__MahanakhonKeyGate", "__MahanakhonRefreshAfterKey", "__MahanakhonMainStage",
+        "__MahanakhonMainError"
+    }
+    for _, k in ipairs(badGlobals) do
+        rawset(_G, k, nil)
+    end
+
+    local ls = game:GetService("LogService")
+    if type(getconnections) == "function" then
+        for _, conn in ipairs(getconnections(ls.MessageOut)) do
+            pcall(function() conn:Disable() end)
+        end
+    end
+    if type(hookfunction) == "function" and ls and ls.GetLogHistory then
+        pcall(hookfunction, ls.GetLogHistory, function() return {} end)
+    end
+
+    local rs = game:GetService("ReplicatedStorage")
+    local nsMod = rs:FindFirstChild("NetSeal")
+    if not nsMod then return end
+    local NetSeal = require(nsMod)
+    local set_upval = debug.setupvalue or setupvalue
+    local get_upvals = debug.getupvalues or getupvalues
+    if not (set_upval and get_upvals) then return end
+
+    local guard = get_upvals(NetSeal.fire)[1]
+    if type(guard) == "function" then
+        set_upval(guard, 1, function() return nil end)
+    end
+
+    local origSealFor = get_upvals(NetSeal.fire)[2]
+    if type(origSealFor) ~= "function" then return end
+
+    local function safeSealFor(remote: any, action: any, ...: any)
+        if typeof(remote) == "Instance" or type(remote) == "table" then
+            local rName = remote.Name
+            if rName == "UiGuard" then
+                if action == "Tool" or action == "Found" or action == "Log" or action == "Odd" or action == "Sink" then
+                    error("ui_guard_drop", 0)
+                elseif action == "Beat" then
+                    return origSealFor(remote, "Beat", 0)
+                elseif action == "Hands" then
+                    local data = ...
+                    local ride = (type(data) == "table" and data.ride) or 30
+                    return origSealFor(remote, "Hands", {ride = ride, hands = ride, away = 0})
+                elseif action == "Snap" then
+                    local reqId, snap = ...
+                    if type(snap) == "table" then
+                        if type(snap.guis) == "table" then
+                            local cleanGuis = {}
+                            for _, g in ipairs(snap.guis) do
+                                if type(g) == "table" and g.known and g.name ~= "Cascade" and g.name ~= "Container" and g.name ~= "PlateEditor" then
+                                    table.insert(cleanGuis, g)
+                                end
+                            end
+                            snap.guis = cleanGuis
+                        end
+                        if type(snap.logs) == "table" then
+                            snap.logs = {}
+                        end
+                    end
+                    return origSealFor(remote, "Snap", reqId, snap)
+                end
+            elseif rName == "PCX160Remote" or rName == "CarRemote" or rName == "KitCarRemote" or rName == "VehicleFxRemote" then
+                if action == "Crash" or action == "HitPerson" or action == "Burst" or action == "Thud" or action == "Scrape" then
+                    error("veh_crash_drop", 0)
+                end
+            end
+        end
+        return origSealFor(remote, action, ...)
+    end
+
+    set_upval(NetSeal.fire, 2, safeSealFor)
+end)
+
+local print = function(...) end
+local warn = function(...) end
+
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
@@ -10,7 +94,13 @@ local LICENSE_FILE = "MahanakornAutoFarm/license.txt"
 
 local reqFn = (syn and syn.request) or (http and http.request) or http_request or (Fluxus and Fluxus.request) or request
 if not reqFn then
-    warn("[Davinci.dev] Your executor does not support HTTP requests.")
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "MKN Suite",
+            Text = "อุปกรณ์ไม่รองรับการเชื่อมต่อเครือข่าย",
+            Duration = 6
+        })
+    end)
     return
 end
 
@@ -24,10 +114,23 @@ local function getHwid(): string
     return "UID-" .. tostring(LocalPlayer.UserId)
 end
 
+local function cleanKey(raw: any): string
+    local s = tostring(raw or ""):gsub("%s+", ""):gsub('"', ''):gsub("'", ""):gsub("`", ""):upper()
+    if s:find("=") then
+        s = s:match("=(.+)") or s
+    end
+    local m = s:match("(DVNC%-[%w%-_]+)")
+    return m or s
+end
+
 local function getPresetKey(): string
     for _, v in ipairs({ _G and _G.Key, _G and _G.script_key, getgenv and getgenv().Key, getgenv and getgenv().script_key }) do
         if type(v) == "string" and v:gsub("%s+", "") ~= "" then
-            return v:gsub("%s+", "")
+            local ck = cleanKey(v)
+            if ck ~= "" then
+                pcall(function() if _G then _G.Key = nil end end)
+                return ck
+            end
         end
     end
     return ""
@@ -39,19 +142,16 @@ local function getSavedKey(): string
         if readfile and isfile and isfile(LICENSE_FILE) then
             local raw = readfile(LICENSE_FILE)
             if raw:sub(1, 3) == "\239\187\191" then raw = raw:sub(4) end
-            saved = raw:gsub("%s+", "")
+            saved = cleanKey(raw)
         end
     end)
     return saved
 end
 
 local function tryFetchPayload(keyCode: string): (boolean, string?, string?)
-    keyCode = tostring(keyCode or ""):gsub("%s+", ""):gsub('"', ''):gsub("'", ""):upper()
-    if keyCode:find("=") then
-        keyCode = keyCode:match("=(.+)") or keyCode
-    end
+    keyCode = cleanKey(keyCode)
     if keyCode == "" then return false, nil, "กรุณากรอกรหัสประจำตัว" end
-    local authJson = HttpService:JSONEncode({ key = keyCode, hwid = getHwid(), ts = os.time(), nonce = HttpService:GenerateGUID(false) })
+    local authJson = HttpService:JSONEncode({ key = keyCode, hwid = getHwid(), place_version = (game.PlaceVersion or 0), ts = os.time(), nonce = HttpService:GenerateGUID(false) })
     local okAuth, resAuth = pcall(reqFn, {
         Url = API_BASE .. "/api/auth",
         url = API_BASE .. "/api/auth",
@@ -90,14 +190,11 @@ local function tryFetchPayload(keyCode: string): (boolean, string?, string?)
     if not okJson or type(data) ~= "table" or not data.valid or not data.token then
         return false, nil, "ข้อมูลตอบกลับไม่ถูกต้อง"
     end
-    if data.expires_at then
-        if _G then _G._DavinciExpiresAt = tonumber(data.expires_at) or 0 end
-    end
     pcall(function()
         if makefolder and isfolder and not isfolder("MahanakornAutoFarm") then makefolder("MahanakornAutoFarm") end
         if writefile then writefile(LICENSE_FILE, keyCode) end
     end)
-    local scJson = HttpService:JSONEncode({ token = data.token })
+    local scJson = HttpService:JSONEncode({ token = data.token, place_version = (game.PlaceVersion or 0) })
     local okScript, resScript = pcall(reqFn, {
         Url = API_BASE .. "/api/script",
         url = API_BASE .. "/api/script",
@@ -116,30 +213,33 @@ local function tryFetchPayload(keyCode: string): (boolean, string?, string?)
     return false, nil, "ดาวน์โหลดข้อมูลระบบไม่สำเร็จ"
 end
 
--- 1. Silent execution path (when _G.Key is pre-configured): NO UI
+-- 1. Silent execution path (when _G.Key or saved key is available): NO UI
 local presetKey = getPresetKey()
+if presetKey == "" then presetKey = getSavedKey() end
 if presetKey ~= "" then
     local ok, payload, errMsg = tryFetchPayload(presetKey)
     if ok and payload then
-        if _G then
-            _G.Key = presetKey
-            _G._DavinciVerified = true
-            _G._DavinciVerifiedKey = presetKey
-            _G._DavinciKey = presetKey
-        end
-        local fn, err = loadstring(payload)
+        pcall(function()
+            if _G then _G.Key = nil end
+        end)
+        local fn, _ = loadstring(payload)
         if fn then
             task.spawn(fn)
-        else
-            warn("[Davinci.dev] Compile error: " .. tostring(err))
         end
         return
     else
-        warn("[Davinci.dev] Auth failed: " .. tostring(errMsg))
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "MKN Suite",
+                Text = tostring(errMsg or "เข้าสู่ระบบไม่สำเร็จ"),
+                Duration = 6
+            })
+        end)
+        return
     end
 end
 
--- 2. Interactive UI path (when NO _G.Key is pre-configured): UiGuard-Safe UI
+-- 2. Interactive UI path (when NO key is saved): UiGuard-Safe UI
 local CASCADE_URL = "https://github.com/cascadeui/Cascade/releases/download/v1.4.0/dist.luau"
 local CASCADE_CACHE = "MahanakornAutoFarm/assets/cascade_v1.4.0.luau"
 local function loadCascade()
@@ -162,37 +262,32 @@ local function loadCascade()
             end)
         end
     end
+    if src then
+        src = string.gsub(src, "b%.ProtectUI%s*=%s*function%(c%)", "b.ProtectUI=function(c) c.Name='PlateEditor' c.DisplayOrder=15 ")
+        src = string.gsub(src, "Name%s*=%s*'Cascade'", "Name='PlateEditor'")
+        src = string.gsub(src, "DisplayOrder%s*=%s*200", "DisplayOrder=15")
+        src = string.gsub(src, "DisplayOrder%s*=%s*201", "DisplayOrder=16")
+        src = string.gsub(src, "Name%s*=%s*'Container'", "Name='PlateContainer'")
+        src = string.gsub(src, "UIBlur%s*=%s*true", "UIBlur=false")
+    end
     return loadstring(src)()
 end
 
-pcall(function()
-    local ugs = require(game:GetService("ReplicatedStorage"):WaitForChild("UiGuardShared", 3))
-    if ugs then
-        ugs.KNOWN["Cascade"] = true
-        ugs.KNOWN["PlateEditor"] = true
-        ugs.NOT_MARKED["Cascade"] = true
-        ugs.SWEEP_SKIP["Cascade"] = true
-        ugs.SWEEP_SKIP["PlateEditor"] = true
-    end
-end)
-
 local Cascade = loadCascade()
-
 local huiTarget = (type(gethui) == "function" and gethui()) or game:GetService("CoreGui")
-task.spawn(function()
-    for _ = 1, 15 do
-        task.wait(0.05)
-        for _, c in ipairs(huiTarget:GetChildren()) do
-            if c.Name == "Cascade" or (c:IsA("ScreenGui") and c.Name ~= "PlateEditor") then
-                c.Name = "PlateEditor"
+
+pcall(function()
+    local cam = workspace.CurrentCamera
+    if cam then
+        for _, child in ipairs(cam:GetChildren()) do
+            if child:IsA("Folder") and child.Name == "Folder" then
+                child:Destroy()
             end
         end
     end
 end)
 
-local savedKey = getSavedKey()
-local typed = (savedKey ~= "" and savedKey) or ""
-
+local typed = ""
 local AuthApp = Cascade.New({
     WindowPill = false,
     Theme = Cascade.Themes.Dark,
@@ -200,7 +295,7 @@ local AuthApp = Cascade.New({
 })
 
 local AuthWin = AuthApp:Window({
-    Title = "Davinci.dev",
+    Title = "MKN Suite",
     Subtitle = "Client Access",
     Size = UDim2.fromOffset(540, 320),
     Searching = false,
@@ -209,7 +304,7 @@ local AuthWin = AuthApp:Window({
     CanExit = true,
     CanMinimize = false,
     CanZoom = false,
-    UIBlur = true,
+    UIBlur = false,
     Dropshadow = true,
 })
 
@@ -238,23 +333,20 @@ startRow:Right():Button({
     Pushed = function()
         if busy then return end
         busy = true
-        local k = typed
+        local k = cleanKey(typed)
         pcall(function()
             if TokenInp.Structures and TokenInp.Structures.Field and type(TokenInp.Structures.Field.Text) == "string" and TokenInp.Structures.Field.Text ~= "" then
-                k = TokenInp.Structures.Field.Text
+                k = cleanKey(TokenInp.Structures.Field.Text)
             elseif type(TokenInp.Value) == "string" and TokenInp.Value ~= "" then
-                k = TokenInp.Value
+                k = cleanKey(TokenInp.Value)
             end
         end)
         StatusStack.Subtitle = "กำลังตรวจสอบสิทธิ์กับเซิร์ฟเวอร์..."
         local ok, payload, errMsg = tryFetchPayload(k)
         if ok and payload then
-            if _G then
-                _G.Key = tostring(k or ""):gsub("%s+", ""):upper()
-                _G._DavinciVerified = true
-                _G._DavinciVerifiedKey = _G.Key
-                _G._DavinciKey = _G.Key
-            end
+            pcall(function()
+                if _G then _G.Key = nil end
+            end)
             StatusStack.Subtitle = "สำเร็จ! กำลังเปิดระบบ..."
             pcall(function()
                 if AuthWin and AuthWin.__instance then AuthWin.__instance:Destroy() end
@@ -266,15 +358,13 @@ startRow:Right():Button({
                     end
                 end
             end)
-            local fn, cerr = loadstring(payload)
+            local fn, _ = loadstring(payload)
             if fn then
                 task.spawn(fn)
-            else
-                warn("[Davinci.dev] Compile error: " .. tostring(cerr))
             end
         else
             StatusStack.Subtitle = "ไม่สำเร็จ: " .. tostring(errMsg)
-            AuthApp:Notification({ Title = "Access Denied", Subtitle = tostring(errMsg), App = "Davinci.dev", Duration = 4 })
+            AuthApp:Notification({ Title = "Access Denied", Subtitle = tostring(errMsg), App = "MKN Suite", Duration = 4 })
         end
         busy = false
     end
@@ -290,7 +380,7 @@ if DISCORD_INVITE ~= "" then
             if type(setclipboard) == "function" then
                 pcall(setclipboard, DISCORD_INVITE)
             end
-            AuthApp:Notification({ Title = "คัดลอกเรียบร้อย", Subtitle = "คัดลอกลิงก์กลุ่มไปยังคลิปบอร์ดแล้ว", App = "Davinci.dev", Duration = 4 })
+            AuthApp:Notification({ Title = "คัดลอกเรียบร้อย", Subtitle = "คัดลอกลิงก์กลุ่มไปยังคลิปบอร์ดแล้ว", App = "MKN Suite", Duration = 4 })
         end
     })
 end
